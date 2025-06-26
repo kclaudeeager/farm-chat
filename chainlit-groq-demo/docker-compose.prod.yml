@@ -1,0 +1,75 @@
+# Production Deployment Configuration
+
+# Add this nginx service to your docker-compose.yml for production
+version: '3.8'
+
+services:
+  # Nginx Reverse Proxy (for production)
+  nginx:
+    image: nginx:alpine
+    container_name: farm-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./ssl:/etc/nginx/ssl  # For SSL certificates
+    depends_on:
+      - farm-control-demo
+      - thingsboard-with-copilot
+    networks:
+      - farm_network
+    restart: unless-stopped
+    profiles: ["production"]
+
+  # Update your existing services for production
+  farm-control-demo:
+    build: .
+    container_name: farm-control-demo
+    # Remove port mapping - nginx will handle routing
+    expose:
+      - "8000"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OPENAI_PROJECT_API_KEY=${OPENAI_PROJECT_API_KEY}
+      - THINGSBOARD_HOST=thingsboard
+      - THINGSBOARD_PORT=9090
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=thingsboard
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    volumes:
+      - farm-data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - farm_network
+    depends_on:
+      - thingsboard
+      - postgres
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  thingsboard-with-copilot:
+    build: 
+      context: ./src/thingsboard-with-copilot
+      dockerfile: Dockerfile
+    container_name: thingsboard-with-copilot
+    # Remove port mapping - nginx will handle routing
+    expose:
+      - "9000"
+    environment:
+      - THINGSBOARD_URL=http://thingsboard:9090
+      - CHAINLIT_URL=http://farm-control-demo:8000
+      - PORT=9000
+    networks:
+      - farm_network
+    depends_on:
+      - thingsboard
+      - farm-control-demo
+    restart: unless-stopped

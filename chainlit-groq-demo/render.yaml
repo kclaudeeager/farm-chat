@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: farm-control-ai
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: PORT
+        value: 8000
+    plan: starter  # Free tier available
+    healthCheckPath: /health
