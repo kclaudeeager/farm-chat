@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+farm_control_demo.egg-info/PKG-INFO
+farm_control_demo.egg-info/SOURCES.txt
+farm_control_demo.egg-info/dependency_links.txt
+farm_control_demo.egg-info/requires.txt
+farm_control_demo.egg-info/top_level.txt
+tests/test_voice_utils.py

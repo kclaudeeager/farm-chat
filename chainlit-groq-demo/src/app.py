@@ -9,11 +9,14 @@ import json
 import os
 from typing import Dict, Any, List
 from groq import AsyncGroq
-
+from utils.chainlit_voice_integration import ChainlitVoiceIntegration
+import logging
 
 # Initialize conversation history
 conversation_history = []
 mcp_tools_cache = {}
+
+logger = logging.getLogger("chainlit-voice")
 
 
 async def connect_to_mcp_server():
@@ -232,14 +235,14 @@ def serialize_tool_result(result):
 
 
 def format_farm_response(tool_name: str, result: Any, user_query: str) -> str:
-    """Format tool results in a farm-friendly way."""
+    """Format tool results in a farm-friendly way, with audio widget and auto-playback for TTS."""
     try:
         serialized = serialize_tool_result(result)
-        
-        # Extract text content if available
+        text_content = None
+        audio_path = None
+        # Extract text and audio path if available
         if isinstance(serialized, dict):
             if "content" in serialized and isinstance(serialized["content"], list):
-                # Handle list of content objects
                 text_parts = []
                 for item in serialized["content"]:
                     if isinstance(item, dict) and "text" in item:
@@ -249,11 +252,18 @@ def format_farm_response(tool_name: str, result: Any, user_query: str) -> str:
                 text_content = " ".join(text_parts)
             elif "text" in serialized:
                 text_content = serialized["text"]
+            elif "audio_path" in serialized:
+                audio_path = serialized["audio_path"]
             else:
                 text_content = json.dumps(serialized, indent=2)
         else:
             text_content = str(serialized)
-        
+        # If this is a TTS tool, add an audio widget and auto-play if possible
+        if tool_name == "speak_text" and (audio_path or (isinstance(result, str) and result.endswith('.wav'))):
+            audio_file = audio_path or result
+            # Use Chainlit's audio widget (with auto_play if supported)
+            cl.Audio(name="TTS Audio", path=audio_file, auto_play=True).send()
+            return f"🔊 **Audio Response**\n\nAudio file generated: {audio_file}"
         # Create context-aware responses based on tool type
         if "farm" in tool_name.lower():
             return f"🚜 **Farm Information**\n\n{text_content}"
@@ -267,8 +277,8 @@ def format_farm_response(tool_name: str, result: Any, user_query: str) -> str:
             return f"🌱 **Irrigation System**\n\n{text_content}"
         else:
             return f"ℹ️ **{tool_name.replace('_', ' ').title()}**\n\n{text_content}"
-            
     except Exception as e:
+        logger.error(f"Error formatting farm response: {e}", exc_info=True)
         return f"📋 Result: {str(result)}\n\n*Note: Error formatting response: {str(e)}*"
 
 
@@ -363,7 +373,56 @@ async def on_message(message: cl.Message):
                         content=formatted_result,
                         author="Farm System"
                     ).send()
-                    
+
+                    # If the tool is speak_text, handle audio playback robustly (only once)
+                    if tool_name == "speak_text":
+                        audio_file = None
+                        attempted_paths = []
+                        tts_text = None
+                        if isinstance(tool_result, dict):
+                            if "audio_path" in tool_result:
+                                candidate = tool_result["audio_path"]
+                                attempted_paths.append(candidate)
+                                if candidate and isinstance(candidate, str) and os.path.exists(candidate):
+                                    audio_file = candidate
+                            elif "content" in tool_result and isinstance(tool_result["content"], list):
+                                for item in tool_result["content"]:
+                                    if isinstance(item, dict) and "text" in item and isinstance(item["text"], str):
+                                        attempted_paths.append(item["text"])
+                                        if item["text"].endswith('.wav') and os.path.exists(item["text"]):
+                                            audio_file = item["text"]
+                                            break
+                                    elif isinstance(item, str):
+                                        attempted_paths.append(item)
+                                        if item.endswith('.wav') and os.path.exists(item):
+                                            audio_file = item
+                                            break
+                            # Try to extract the text that was spoken
+                            if "text" in tool_result:
+                                tts_text = tool_result["text"]
+                        elif isinstance(tool_result, str):
+                            attempted_paths.append(tool_result)
+                            if tool_result.endswith('.wav') and os.path.exists(tool_result):
+                                audio_file = tool_result
+                        elif hasattr(tool_result, "content") and isinstance(tool_result.content, list):
+                            for item in tool_result.content:
+                                if hasattr(item, "text") and isinstance(item.text, str):
+                                    attempted_paths.append(item.text)
+                                    if item.text.endswith('.wav') and os.path.exists(item.text):
+                                        audio_file = item.text
+                                        break
+                        # Try to extract the text that was spoken from tool_input if not found
+                        if not tts_text and "text" in tool_args:
+                            tts_text = tool_args["text"]
+                        # Send the TTS text as a message
+                        if tts_text:
+                            await cl.Message(content=f'🗣️ TTS text: "{tts_text}"').send()
+                        if audio_file:
+                            audio_msg = await cl.Message(content="🔊 Playing TTS audio...").send()
+                            await cl.Audio(name="TTS Audio", path=audio_file, auto_play=True).send(for_id=audio_msg.id)
+                        else:
+                            logger.warning(f"TTS audio file not found. Attempted paths: {attempted_paths}")
+                            await cl.Message(content=f"⚠️ TTS audio file was not found or invalid. Attempted: {attempted_paths}").send()
                     # Add tool response to history
                     tool_response_content = json.dumps(serialize_tool_result(tool_result))
                     message_history.append({
@@ -471,6 +530,82 @@ async def on_mcp_disconnect(name: str, session):
         del mcp_tools[name]
         cl.user_session.set("mcp_tools", mcp_tools)
 
+@cl.on_audio_start
+async def on_audio_start():
+    try:
+        logger.info("🎤 Audio session starting - checking permissions...")
+        
+        await cl.Message(content="🎤 Microphone access requested. Please allow when prompted.").send()
+        
+        state = cl.user_session.get("state", {})
+        state["voice_enabled"] = True
+        state["auto_speak"] = True
+        cl.user_session.set("state", state)
+        
+        voice_integration = cl.user_session.get("voice_integration")
+        if not voice_integration:
+            voice_integration = ChainlitVoiceIntegration(cl)
+            cl.user_session.set("voice_integration", voice_integration)
+        
+        result = await voice_integration.handle_audio_start()
+        
+        if result:
+            await cl.Message(content="✅ Audio recording started successfully!").send()
+        else:
+            await cl.Message(content="❌ Failed to start audio recording").send()
+            
+        return result
+        
+    except Exception as e:
+        error_msg = f"Audio start error: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        await cl.ErrorMessage(content=error_msg).send()
+        return False
+
+@cl.on_audio_chunk
+async def on_audio_chunk(chunk: cl.InputAudioChunk):
+    try:
+        # Add chunk size logging
+        logger.info(f"📦 Received audio chunk: {len(chunk.data)} bytes")
+        
+        voice_integration = cl.user_session.get("voice_integration")
+        if voice_integration:
+            await voice_integration.handle_audio_chunk(chunk.data)
+        else:
+            logger.warning("No voice integration found for audio chunk")
+            
+    except Exception as e:
+        logger.error(f"Error processing audio chunk: {e}")
+
+@cl.on_audio_end
+async def on_audio_end():
+    """Handle end of audio stream with proper voice input processing"""
+    try:
+        logger.info("🏁 Audio recording ended - processing...")
+        
+        voice_integration = cl.user_session.get("voice_integration")
+        if not voice_integration:
+            logger.warning("No voice integration found for audio end")
+            return
+            
+        # Process the recorded audio
+        transcribed_text = await voice_integration.handle_audio_end()
+        
+        if transcribed_text and transcribed_text.strip():
+            logger.info(f"Transcribed text: '{transcribed_text}'")
+            
+            # Create a message with voice input flag and process it
+            voice_message = cl.Message(content=transcribed_text)
+            voice_message.voice_input = True  # Mark as voice input
+            
+            # Process the voice message through the normal message handler
+            await on_message(voice_message)  
+        else:
+            await cl.Message(content="I didn't catch that. Could you please try again?").send()
+            
+    except Exception as e:
+        logger.error(f"Error ending audio session: {e}", exc_info=True)
+        await cl.Message(content="Sorry, I had trouble processing your voice input. Please try again.").send()
 
 if __name__ == "__main__":
     print("🚜 Starting Farm Control Chainlit + GROQ Demo...")

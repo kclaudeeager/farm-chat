@@ -44,9 +44,16 @@
         const getServerUrl = () => {
             const protocol = window.location.protocol;
             const host = window.location.hostname;
-            
-            // Since we're behind nginx proxy, use the copilot path
-            return `${protocol}//${host}:${window.location.port || '9001'}`;
+            // Only add port if it's localhost or an IP address (not a real domain and not https)
+            const isLocal = (
+            host === "localhost" ||
+            host === "127.0.0.1" ||
+            /^[0-9.]+$/.test(host)
+            );
+            if (isLocal && window.location.port) {
+            return `${protocol}//${host}:${window.location.port}`;
+            }
+            return `${protocol}//${host}`;
         };
 
         // Load Chainlit script dynamically to ensure it uses the right protocol
@@ -54,13 +61,13 @@
             const script = document.createElement('script');
             script.src = `${getServerUrl()}/copilot/index.js`;
             script.onload = () => {
-                console.log("Chainlit script loaded successfully");
-                initializeChainlit();
+            console.log("Chainlit script loaded successfully");
+            initializeChainlit();
             };
             script.onerror = (error) => {
-                console.error("Failed to load Chainlit script:", error);
-                console.log("Falling back to iframe approach...");
-                createIframeFallback();
+            console.error("Failed to load Chainlit script:", error);
+            console.log("Falling back to iframe approach...");
+            createIframeFallback();
             };
             document.body.appendChild(script);
         }

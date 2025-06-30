@@ -3,8 +3,10 @@
 from mcp.server.fastmcp import FastMCP
 from models.models import Farm, Field, Sensor, Actuator, Resource, get_session_factory, init_db
 from services.farm_control_service import FarmControlService
+from utils.voice_utils import VoiceManager
 import json
 import logging
+import asyncio
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, 
@@ -17,6 +19,9 @@ farm_service = FarmControlService(session_factory)
 
 # Create FastMCP instance
 mcp = FastMCP("farm_control_server")
+
+# Initialize VoiceManager
+voice_manager = VoiceManager()
 
 # Track active operations for UI
 active_operations = {}
@@ -464,6 +469,30 @@ def create_custom_rulechain(telemtery_key:str,threshold_value:str)->str:
     """
     result = farm_service.create_custom_rulechain(telemtery_key, threshold_value)
     return str(result)
+
+@mcp.tool()
+async def transcribe_audio(audio_file_path: str) -> str:
+    """
+    Transcribe a WAV audio file to text using Whisper.
+    Args:
+        audio_file_path: Path to the WAV file
+    Returns:
+        Transcribed text
+    """
+    result = await voice_manager.transcribe_audio_file(audio_file_path)
+    return result or "Transcription failed."
+
+@mcp.tool()
+async def speak_text(text: str) -> str:
+    """
+    Synthesize speech from text and return the audio file path.
+    Args:
+        text: Text to synthesize
+    Returns:
+        Path to the generated WAV file
+    """
+    audio_path = await voice_manager.create_audio_response(text)
+    return audio_path or "Audio synthesis failed."
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
